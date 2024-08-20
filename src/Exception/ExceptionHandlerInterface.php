@@ -26,9 +26,9 @@
 
 namespace Triangle\Exception;
 
+use localzet\Server\Protocols\Http\Request;
+use localzet\Server\Protocols\Http\Response;
 use Throwable;
-use Triangle\Ws\Request;
-use Triangle\Ws\Response;
 
 interface ExceptionHandlerInterface
 {

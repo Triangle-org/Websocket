@@ -28,8 +28,9 @@ namespace Triangle\Exception;
 
 use RuntimeException;
 use Throwable;
-use Triangle\Ws\Request;
-use Triangle\Ws\Response;
+use localzet\Server\Protocols\Http\Request;
+use localzet\Server\Protocols\Http\Response;
+use Triangle\Engine\Interface\ExceptionInterface;
 use function nl2br;
 use function responseJson;
 use function responseView;

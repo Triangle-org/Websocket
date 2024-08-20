@@ -26,12 +26,10 @@
 
 namespace Triangle\Exception;
 
+use localzet\Server\Protocols\Http\Request;
+use localzet\Server\Protocols\Http\Response;
 use Psr\Log\LoggerInterface;
 use Throwable;
-use Triangle\Ws\Request;
-use Triangle\Ws\Response;
-use function nl2br;
-use function responseJson;
 use function request;
 
 /**
