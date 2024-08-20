@@ -515,6 +515,9 @@ class App
                 };
             }, function ($request) use ($call, $args) {
                 try {
+                    if ($request instanceof Request) {
+                        $request = $request->getData();
+                    }
                     if ($args === null) {
                         $response = $call($request);
                     } else {

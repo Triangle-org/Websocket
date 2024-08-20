@@ -63,6 +63,19 @@ class Request extends \localzet\Server\Protocols\Http\Request
     public ?RouteObject $route = null;
 
     /**
+     * @var string|null
+     */
+    public ?string $ws_buffer = null;
+
+    /**
+     * @return string|null
+     */
+    public function getData(): ?string
+    {
+        return $this->ws_buffer;
+    }
+
+    /**
      * Получение IP-адреса
      *
      * @return string|null IP-адрес
