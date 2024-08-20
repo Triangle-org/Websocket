@@ -1,7 +1,7 @@
 <component name="CopyrightManager">
-  <settings default="Triangle Http">
+  <settings default="Triangle Websocket">
     <module2copyright>
-      <element module="Project Files" copyright="Triangle Http" />
+      <element module="Project Files" copyright="Triangle Websocket" />
     </module2copyright>
     <LanguageOptions name="__TEMPLATE__">
       <option name="addBlankBefore" value="true" />

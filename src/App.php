@@ -1,8 +1,8 @@
 <?php declare(strict_types=1);
 
 /**
- * @package     Triangle HTTP Component
- * @link        https://github.com/Triangle-org/Http
+ * @package     Triangle Websocket Component
+ * @link        https://github.com/Triangle-org/Websocket
  *
  * @author      Ivan Zorin <creator@localzet.com>
  * @copyright   Copyright (c) 2023-2024 Triangle Framework Team
@@ -726,7 +726,7 @@ class App
                     return 'Object';
                 }
         }
-        return (string)$data;
 
+        return (string)$data;
     }
 }
