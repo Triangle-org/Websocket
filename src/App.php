@@ -244,7 +244,7 @@ class App
                         $plugin = static::getPluginByPath($path);
                     }
 
-                    $callback = static::getCallback($plugin, $callback, $args);
+                    $callback = static::getCallback($plugin, $app, $callback, $args);
                     static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
                     if (count(static::$callbacks) >= 1024) {
                         unset(static::$callbacks[key(static::$callbacks)]);
