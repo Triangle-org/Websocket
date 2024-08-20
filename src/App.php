@@ -171,7 +171,6 @@ class App
             $routeInfo = Router::dispatch('GET', $request->path());
             switch ($routeInfo[0]) {
                 case Dispatcher::FOUND:
-                    $routeInfo[0] = 'route';
                     $callback = $routeInfo[1];
                     $app = $controller = $action = '';
                     $args = !empty($routeInfo[2]) ? $routeInfo[2] : null;
@@ -246,7 +245,9 @@ class App
     {
         try {
             $buffer = $request;
+            /** @var Request $request */
             $request = $connection->request;
+            $request->ws_buffer = $buffer;
 
             // Устанавливаем контекст для соединения и запроса
             Context::set(TcpConnection::class, $connection);
@@ -261,7 +262,7 @@ class App
                 [$callback, $request->plugin, $request->app, $request->controller, $request->action, $request->route] = static::$callbacks[$path];
 
                 // Отправляем обратный вызов
-                static::send($connection, $callback($buffer));
+                static::send($connection, $callback($request));
                 return;
             }
 
@@ -313,7 +314,7 @@ class App
      */
     protected static function send(TcpConnection $connection, string|Response|null $data = null): void
     {
-        $connection->send($data instanceof Response ? $data->rawBody() : $data);
+        $connection->send($data instanceof Http\Response ? $data->rawBody() : $data);
     }
 
     /**
