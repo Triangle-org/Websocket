@@ -261,7 +261,8 @@ class App
                 [$callback, $request->plugin, $request->app, $request->controller, $request->action, $request->route] = static::$callbacks[$path];
 
                 // Отправляем обратный вызов
-                static::send($connection, $callback($request));
+                static::send($connection, $callback($buffer));
+                return;
             }
 
             static::close($connection, 404);
