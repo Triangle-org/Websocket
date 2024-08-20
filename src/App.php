@@ -145,11 +145,11 @@ class App
 
     /**
      * @param TcpConnection $connection
-     * @param Request $request
+     * @param Http\Request $request
      * @return void
      * @throws Throwable
      */
-    public function onWebsocketConnect(TcpConnection &$connection, Request $request): void
+    public function onWebsocketConnect(TcpConnection &$connection, Http\Request $request): void
     {
         try {
             $connection->uuid = generateId();
