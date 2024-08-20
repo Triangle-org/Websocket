@@ -36,6 +36,7 @@ use Monolog\Logger;
 use Psr\Container\ContainerExceptionInterface;
 use Psr\Container\ContainerInterface;
 use Psr\Container\NotFoundExceptionInterface;
+use ReflectionClass;
 use ReflectionException;
 use ReflectionFunction;
 use ReflectionFunctionAbstract;
@@ -169,7 +170,49 @@ class App
             // Проверка на 404 и 405
             $routeInfo = Router::dispatch('GET', $request->path());
             switch ($routeInfo[0]) {
+                case Dispatcher::FOUND:
+                    $routeInfo[0] = 'route';
+                    $callback = $routeInfo[1];
+                    $app = $controller = $action = '';
+                    $args = !empty($routeInfo[2]) ? $routeInfo[2] : null;
+                    $route = clone $routeInfo[3];
+
+                    if ($args) {
+                        $route->setParams($args);
+                    }
+
+                    if (is_array($callback)) {
+                        $controller = $callback[0];
+                        $plugin = static::getPluginByClass($controller);
+                        $app = static::getAppByController($controller);
+                        $action = static::getRealMethod($controller, $callback[1]) ?? '';
+                    } else {
+                        $plugin = static::getPluginByPath($path);
+                    }
+
+                    $callback = static::getCallback($plugin, $app, $callback, $args);
+                    static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
+                    if (count(static::$callbacks) >= 1024) {
+                        unset(static::$callbacks[key(static::$callbacks)]);
+                    }
+                    break;
                 case Dispatcher::NOT_FOUND:
+                    // Парсим контроллер и действие из пути
+                    $controllerAndAction = static::parseControllerAction($path);
+                    $plugin = $controllerAndAction['plugin'] ?? static::getPluginByPath($path);
+
+                    // Получаем приложение, контроллер и действие
+                    $app = $controllerAndAction['app'];
+                    $controller = $controllerAndAction['controller'];
+                    $action = $controllerAndAction['action'];
+
+                    // Получаем обратный вызов
+                    $callback = static::getCallback($plugin, $app, [$controller, $action]);
+                    static::$callbacks[$path] = [$callback, $plugin, $app, $controller, $action, null];
+                    if (count(static::$callbacks) >= 1024) {
+                        unset(static::$callbacks[key(static::$callbacks)]);
+                    }
+
                     Server::log('Не найден URL: ' . $path . PHP_EOL);
                     static::close_http($connection, 404);
                     return;
@@ -221,49 +264,7 @@ class App
                 static::send($connection, $callback($request));
             }
 
-            $routeInfo = Router::dispatch('GET', $path);
-
-            switch ($routeInfo[0]) {
-                case Dispatcher::FOUND:
-                    $routeInfo[0] = 'route';
-                    $callback = $routeInfo[1];
-                    $app = $controller = $action = '';
-                    $args = !empty($routeInfo[2]) ? $routeInfo[2] : null;
-                    $route = clone $routeInfo[3];
-
-                    if ($args) {
-                        $route->setParams($args);
-                    }
-
-                    if (is_array($callback)) {
-                        $controller = $callback[0];
-                        $plugin = static::getPluginByClass($controller);
-                        $app = static::getAppByController($controller);
-                        $action = static::getRealMethod($controller, $callback[1]) ?? '';
-                    } else {
-                        $plugin = static::getPluginByPath($path);
-                    }
-
-                    $callback = static::getCallback($plugin, $app, $callback, $args);
-                    static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
-                    if (count(static::$callbacks) >= 1024) {
-                        unset(static::$callbacks[key(static::$callbacks)]);
-                    }
-
-                    [$callback,
-                        $request->plugin, $request->app,
-                        $request->controller, $request->action,
-                        $request->route] = static::$callbacks[$path];
-
-                    static::send($connection, $callback($buffer));
-                    break;
-                case Dispatcher::NOT_FOUND:
-                    static::close($connection, 404);
-                    break;
-                case Dispatcher::METHOD_NOT_ALLOWED:
-                    static::close($connection, 405);
-                    break;
-            }
+            static::close($connection, 404);
         } catch (Throwable $e) {
             // Если возникло исключение, отправляем ответ на исключение
             static::send($connection, static::exceptionResponse($e, $request));
@@ -705,6 +706,236 @@ class App
         }
         // Возвращаем вторую часть пути (имя плагина) или пустую строку, если она не существует
         return $tmp[1] ?? '';
+    }
+
+    /**
+     * Функция для разбора контроллера и действия из пути.
+     *
+     * @param string $path Путь.
+     * @return array|false Возвращает массив с информацией о контроллере и действии, если они найдены, иначе возвращает false.
+     * @throws ReflectionException
+     */
+    protected static function parseControllerAction(string $path): false|array
+    {
+        // Удаляем дефисы из пути
+        $path = str_replace(['-', '//'], ['', '/'], $path);
+
+        static $cache = [];
+        if (isset($cache[$path])) {
+            return $cache[$path];
+        }
+
+        // Разбиваем путь на части
+        $pathExplode = explode('/', trim($path, '/'));
+
+        // Проверяем, является ли путь плагином
+        $isPlugin = isset($pathExplode[1]) && $pathExplode[0] === 'app';
+
+        // Получаем префиксы для конфигурации, пути и класса
+        $configPrefix = $isPlugin ? "plugin.$pathExplode[1]." : '';
+        $pathPrefix = $isPlugin ? "/app/$pathExplode[1]" : '';
+        $classPrefix = $isPlugin ? "plugin\\$pathExplode[1]" : '';
+
+        // Получаем суффикс контроллера из конфигурации
+        $suffix = Config::get("{$configPrefix}app.controller_suffix", '');
+
+        // Получаем относительный путь
+        $relativePath = trim(substr($path, strlen($pathPrefix)), '/');
+        $pathExplode = $relativePath ? explode('/', $relativePath) : [];
+
+        // По умолчанию действие - это 'index'
+        $action = 'index';
+
+        // Пытаемся угадать контроллер и действие
+        if (!$controllerAction = static::guessControllerAction($pathExplode, $action, $suffix, $classPrefix)) {
+            // Если контроллер и действие не найдены и путь состоит из одной части, возвращаем false
+            if (count($pathExplode) <= 1) {
+                return false;
+            }
+
+            $action = end($pathExplode);
+            unset($pathExplode[count($pathExplode) - 1]);
+            $controllerAction = static::guessControllerAction($pathExplode, $action, $suffix, $classPrefix);
+        }
+
+        if ($controllerAction && !isset($path[256])) {
+            $cache[$path] = $controllerAction;
+            if (count($cache) > 1024) {
+                unset($cache[key($cache)]);
+            }
+        }
+
+        return $controllerAction;
+    }
+
+
+    /**
+     * Функция для предположения контроллера и действия.
+     *
+     * @param array $pathExplode Массив с разделенными частями пути.
+     * @param string $action Название действия.
+     * @param string $suffix Суффикс.
+     * @param string $classPrefix Префикс класса.
+     * @return array|false Возвращает массив с информацией о контроллере и действии, если они найдены, иначе возвращает false.
+     * @throws ReflectionException
+     */
+    protected static function guessControllerAction(array $pathExplode, string $action, string $suffix, string $classPrefix): false|array
+    {
+        // Создаем карту возможных путей к контроллеру
+        $map[] = trim("$classPrefix\\app\\controller\\" . implode('\\', $pathExplode), '\\');
+        foreach ($pathExplode as $index => $section) {
+            $tmp = $pathExplode;
+            array_splice($tmp, $index, 1, [$section, 'controller']);
+            $map[] = trim("$classPrefix\\" . implode('\\', array_merge(['app'], $tmp)), '\\');
+        }
+        foreach ($map as $item) {
+            $map[] = $item . '\\index';
+        }
+
+        // Проверяем каждый возможный путь
+        foreach ($map as $controllerClass) {
+            // Удаляем xx\xx\controller
+            if (str_ends_with($controllerClass, '\\controller')) {
+                continue;
+            }
+            $controllerClass .= $suffix;
+            // Если контроллер и действие найдены, возвращаем информацию о них
+            if ($controllerAction = static::getControllerAction($controllerClass, $action)) {
+                return $controllerAction;
+            }
+        }
+
+        // Если контроллер или действие не найдены, возвращаем false
+        return false;
+    }
+
+
+    /**
+     * Функция для получения контроллера и действия.
+     *
+     * @param string $controllerClass Имя класса контроллера.
+     * @param string $action Название действия.
+     * @return array|false Возвращает массив с информацией о контроллере и действии, если они найдены, иначе возвращает false.
+     * @throws ReflectionException
+     */
+    protected static function getControllerAction(string $controllerClass, string $action): false|array
+    {
+        // Отключаем вызов магических методов
+        if (str_starts_with($action, '__')) {
+            return false;
+        }
+
+        // Если класс контроллера и действие найдены, возвращаем информацию о них
+        if (($controllerClass = static::getController($controllerClass)) && ($action = static::getAction($controllerClass, $action))) {
+            return [
+                'plugin' => static::getPluginByClass($controllerClass),
+                'app' => static::getAppByController($controllerClass),
+                'controller' => $controllerClass,
+                'action' => $action
+            ];
+        }
+
+        // Если класс контроллера или действие не найдены, возвращаем false
+        return false;
+    }
+
+    /**
+     * Функция для получения контроллера.
+     *
+     * @param string $controllerClass Имя класса контроллера.
+     * @return string|false Возвращает имя класса контроллера, если он найден, иначе возвращает false.
+     * @throws ReflectionException
+     */
+    protected static function getController(string $controllerClass): false|string
+    {
+        // Если класс контроллера существует, возвращаем его имя
+        if (class_exists($controllerClass)) {
+            return (new ReflectionClass($controllerClass))->name;
+        }
+
+        // Разбиваем полное имя класса на части
+        $explodes = explode('\\', strtolower(ltrim($controllerClass, '\\')));
+        $basePath = $explodes[0] === 'plugin' ? Path::basePath('plugin') : app_path();
+        unset($explodes[0]);
+        $fileName = array_pop($explodes) . '.php';
+        $found = true;
+
+        // Ищем соответствующую директорию
+        foreach ($explodes as $pathSection) {
+            if (!$found) {
+                break;
+            }
+            $dirs = scan_dir($basePath, false);
+            $found = false;
+            foreach ($dirs as $name) {
+                $path = "$basePath/$name";
+                if (is_dir($path) && strtolower($name) === $pathSection) {
+                    $basePath = $path;
+                    $found = true;
+                    break;
+                }
+            }
+        }
+
+        // Если директория не найдена, возвращаем false
+        if (!$found) {
+            return false;
+        }
+
+        // Ищем файл контроллера в директории
+        foreach (scandir($basePath) ?: [] as $name) {
+            if (strtolower($name) === $fileName) {
+                require_once "$basePath/$name";
+                if (class_exists($controllerClass, false)) {
+                    return (new ReflectionClass($controllerClass))->name;
+                }
+            }
+        }
+
+        // Если файл контроллера не найден, возвращаем false
+        return false;
+    }
+
+    /**
+     * Функция для получения действия контроллера.
+     *
+     * @param string $controllerClass Имя класса контроллера.
+     * @param string $action Название действия.
+     * @return string|false Возвращает название действия, если оно найдено, иначе возвращает false.
+     */
+    protected static function getAction(string $controllerClass, string $action): false|string
+    {
+        // Получаем все методы класса контроллера
+        $methods = get_class_methods($controllerClass);
+        $lowerAction = strtolower($action);
+        $found = false;
+
+        // Проверяем, есть ли метод, соответствующий действию
+        foreach ($methods as $candidate) {
+            if (strtolower($candidate) === $lowerAction) {
+                $action = $candidate;
+                $found = true;
+                break;
+            }
+        }
+
+        // Если действие найдено, возвращаем его
+        if ($found) {
+            return $action;
+        }
+
+        // Если действие не является публичным методом, возвращаем false
+        if (method_exists($controllerClass, $action)) {
+            return false;
+        }
+
+        // Если в классе контроллера есть метод __call, возвращаем действие
+        if (method_exists($controllerClass, '__call')) {
+            return $action;
+        }
+
+        // В противном случае возвращаем false
+        return false;
     }
 
     /**
