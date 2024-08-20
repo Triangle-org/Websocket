@@ -1,0 +1,42 @@
+{
+  "name": "triangle/ws",
+  "description": "Triangle Websocket Component",
+  "type": "library",
+  "keywords": [
+    "localzet",
+    "Triangle",
+    "Websocket"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "authors": [
+    {
+      "role": "Developer",
+      "name": "Ivan Zorin",
+      "email": "creator@localzet.com",
+      "homepage": "https://github.com/localzet"
+    }
+  ],
+  "support": {
+    "email": "support@localzet.com",
+    "source": "https://github.com/Triangle-org/Http"
+  },
+  "autoload": {
+    "psr-4": {
+      "Triangle\\": "",
+      "Triangle\\Ws\\": "src",
+      "Triangle\\Exception\\": "src/Exception",
+      "support\\": "src/Support/",
+      "Support\\": "src/Support/"
+    },
+    "files": [
+      "src/functions.php"
+    ]
+  },
+  "require": {
+    "php": "^8.0",
+    "triangle/engine": ">=6.3",
+    "triangle/router": "^1.0"
+  },
+  "suggest": {
+  }
+}
