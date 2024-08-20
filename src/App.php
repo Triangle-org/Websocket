@@ -598,52 +598,27 @@ class App
      * Функция для получения зависимых параметров.
      *
      * @param string $plugin Плагин.
-     * @param Request $request Запрос.
+     * @param mixed $request Запрос.
      * @param array $args Аргументы.
      * @param ReflectionFunctionAbstract $reflector Рефлектор.
      * @return array Возвращает массив с зависимыми параметрами.
      */
-    protected static function resolveMethodDependencies(string $plugin, Request $request, array $args, ReflectionFunctionAbstract $reflector): array
+    protected static function resolveMethodDependencies(string $plugin, mixed $request, array $args, ReflectionFunctionAbstract $reflector): array
     {
         // Спецификация информации о параметрах
         $args = array_values($args);
-        $parameters = [];
+        $parameters = [$request];
         // Массив классов рефлексии для циклических параметров, каждый $parameter представляет собой объект рефлексии параметров
         foreach ($reflector->getParameters() as $parameter) {
-            // Потребление квоты параметра
-            if ($parameter->hasType()) {
-                $name = $parameter->getType()->getName();
-                switch ($name) {
-                    case 'int':
-                    case 'string':
-                    case 'bool':
-                    case 'array':
-                    case 'object':
-                    case 'float':
-                    case 'mixed':
-                    case 'resource':
-                        goto _else;
-                    default:
-                        if (is_a($request, $name)) {
-                            // Внедрение Request
-                            $parameters[] = $request;
-                        } else {
-                            $parameters[] = static::container($plugin)->make($name);
-                        }
-                        break;
-                }
+            // Переменный параметр
+            if (null !== key($args)) {
+                $parameters[] = current($args);
             } else {
-                _else:
-                // Переменный параметр
-                if (null !== key($args)) {
-                    $parameters[] = current($args);
-                } else {
-                    // Указывает, имеет ли текущий параметр значение по умолчанию. Если да, возвращает true
-                    $parameters[] = $parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null;
-                }
-                // Потребление квоты переменных
-                next($args);
+                // Указывает, имеет ли текущий параметр значение по умолчанию. Если да, возвращает true
+                $parameters[] = $parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null;
             }
+            // Потребление квоты переменных
+            next($args);
         }
 
         // Возвращает результат замены параметров
@@ -658,34 +633,11 @@ class App
      */
     protected static function resolveInject(string $plugin, array|Closure $call): Closure
     {
-        return function (Request $request, ...$args) use ($plugin, $call) {
+        return function (mixed $request, ...$args) use ($plugin, $call) {
             $reflector = static::getReflector($call);
             $args = static::resolveMethodDependencies($plugin, $request, $args, $reflector);
             return $call(...$args);
         };
-    }
-
-    /**
-     * @param mixed $data
-     * @return string
-     */
-    protected static function stringify(mixed $data): string
-    {
-        $type = gettype($data);
-        switch ($type) {
-            case 'boolean':
-                return $data ? 'true' : 'false';
-            case 'NULL':
-                return 'NULL';
-            case 'array':
-                return 'Array';
-            case 'object':
-                if (!method_exists($data, '__toString')) {
-                    return 'Object';
-                }
-        }
-        return (string)$data;
-
     }
 
     /**
@@ -753,5 +705,28 @@ class App
         }
         // Возвращаем вторую часть пути (имя плагина) или пустую строку, если она не существует
         return $tmp[1] ?? '';
+    }
+
+    /**
+     * @param mixed $data
+     * @return string
+     */
+    protected static function stringify(mixed $data): string
+    {
+        $type = gettype($data);
+        switch ($type) {
+            case 'boolean':
+                return $data ? 'true' : 'false';
+            case 'NULL':
+                return 'NULL';
+            case 'array':
+                return 'Array';
+            case 'object':
+                if (!method_exists($data, '__toString')) {
+                    return 'Object';
+                }
+        }
+        return (string)$data;
+
     }
 }
