@@ -33,6 +33,7 @@ use localzet\Server;
 use localzet\Server\Connection\TcpConnection;
 use localzet\Server\Protocols\Http;
 use localzet\Server\Protocols\Websocket;
+use localzet\ServerAbstract;
 use Monolog\Logger;
 use Psr\Container\ContainerExceptionInterface;
 use Psr\Container\ContainerInterface;
@@ -74,7 +75,7 @@ use function trim;
 /**
  * Class App
  */
-class App
+class App extends ServerAbstract
 {
     /**
      * @var callable[]
@@ -148,15 +149,18 @@ class App
      * Реакция на HTTP-рукопожатие перед WS-соединением
      * @param TcpConnection $connection
      * @param Http\Request $request
-     * @return void
+     * @return void|Http\Response
      * @throws Throwable
      */
-    public function onWebsocketConnect(TcpConnection &$connection, Http\Request $request): void
+    public function onWebsocketConnect(TcpConnection &$connection, Http\Request $request): mixed
     {
         try {
             // Генерация уникального идентификатора для соединения
             $connection->uuid = generateId();
             $path = $request->path();
+
+            // Установка контекста соединения
+            Context::set(TcpConnection::class, $connection);
 
             // Проверка безопасности URL
             if (!$path ||
@@ -167,7 +171,7 @@ class App
                 // Логирование небезопасного URL и закрытие соединения с кодом 422
                 Server::log('Небезопасный URL: ' . $path . PHP_EOL);
                 static::close_http($connection, 422);
-                return;
+                return null;
             }
 
             // Диспетчеризация маршрута на основе пути запроса
@@ -223,8 +227,24 @@ class App
                     // Метод не поддерживается
                     Server::log('Метод GET не поддерживается для ' . $path . PHP_EOL);
                     static::close_http($connection, 405);
-                    return;
+                    return null;
             }
+            // Обновление карты соединений
+            if (!isset(static::$connectionsMap[$path])) {
+                static::$connectionsMap[$path] = [$connection->uuid => $connection];
+            } else {
+                static::$connectionsMap[$path][$connection->uuid] = $connection;
+            }
+
+            // Сохранение callback и информации о соединении
+            static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
+            if (count(static::$callbacks) >= 1024) {
+                unset(static::$callbacks[key(static::$callbacks)]);
+            }
+
+            $callback = function ($request) use ($connection) {
+                return $connection->response;
+            };
 
             // Получение и обработка middleware
             $middlewares = array_merge($middlewares, Middleware::getMiddleware($plugin, $app, true));
@@ -254,25 +274,14 @@ class App
                 }, $callback);
             }
 
-            // Сохранение callback и информации о соединении
-            static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
-            if (count(static::$callbacks) >= 1024) {
-                unset(static::$callbacks[key(static::$callbacks)]);
-            }
-
-            // Обновление карты соединений
-            if (!isset(static::$connectionsMap[$path])) {
-                static::$connectionsMap[$path] = [$connection->uuid => $connection];
-            } else {
-                static::$connectionsMap[$path][$connection->uuid] = $connection;
-            }
             Server::log('Рукопожатие успешно: ' . $path . PHP_EOL);
+            return $callback($request);
         } catch (Throwable $e) {
             // Обработка исключений и закрытие соединения
             static::close_http($connection, static::exceptionResponse($e, $request));
+            return null;
         }
     }
-
 
     /**
      * Функция для обработки сообщений.
@@ -282,7 +291,7 @@ class App
      * @return void
      * @throws Throwable
      */
-    public function onMessage(mixed $connection, mixed $request): void
+    public function onMessage(mixed &$connection, mixed $request): void
     {
         try {
             // Буферизация запроса
@@ -291,9 +300,8 @@ class App
             $request = $connection->request;
             $request->ws_buffer = $buffer;
 
-            // Установка контекста соединения и запроса
-            Context::set(TcpConnection::class, $connection);
-            Context::set(Request::class, $connection->request);
+            // Установка контекста запроса
+            Context::set(Request::class, $request);
 
             // Получение пути запроса
             $path = $request->path();
@@ -312,9 +320,23 @@ class App
             // Отправка ответа с информацией об исключении
             static::send($connection, static::exceptionResponse($e, $request));
         } finally {
-            // Удаление контекста соединения и запроса
-            Context::delete(TcpConnection::class);
+            // Удаление контекста запроса
             Context::delete(Request::class);
+        }
+    }
+
+    /**
+     * @param TcpConnection $connection
+     * @return void
+     */
+    public function onClose(mixed &$connection): void
+    {
+        // Удаление контекста соединения
+        Context::delete(TcpConnection::class);
+
+        // Обновление карты соединений
+        if (isset(static::$connectionsMap[$connection->request->path()][$connection->uuid])) {
+            unset(static::$connectionsMap[$connection->request->path()][$connection->uuid]);
         }
     }
 
