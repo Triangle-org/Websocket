@@ -53,7 +53,6 @@ use Triangle\Middleware\Bootstrap as Middleware;
 use Triangle\Middleware\MiddlewareInterface;
 use Triangle\Router;
 use Triangle\Router\Dispatcher;
-use Triangle\Router\RouteObject;
 use function array_merge;
 use function array_reduce;
 use function array_values;
@@ -146,6 +145,7 @@ class App
     }
 
     /**
+     * Реакция на HTTP-рукопожатие перед WS-соединением
      * @param TcpConnection $connection
      * @param Http\Request $request
      * @return void
@@ -154,6 +154,7 @@ class App
     public function onWebsocketConnect(TcpConnection &$connection, Http\Request $request): void
     {
         try {
+            // Генерация уникального идентификатора для соединения
             $connection->uuid = generateId();
             $path = $request->path();
 
@@ -163,25 +164,36 @@ class App
                 str_contains($path, "\\") ||
                 str_contains($path, "\0")
             ) {
+                // Логирование небезопасного URL и закрытие соединения с кодом 422
                 Server::log('Небезопасный URL: ' . $path . PHP_EOL);
                 static::close_http($connection, 422);
                 return;
             }
 
-            // Проверка на 404 и 405
+            // Диспетчеризация маршрута на основе пути запроса
             $routeInfo = Router::dispatch('GET', $request->path());
+            $middlewares = [];
             switch ($routeInfo[0]) {
                 case Dispatcher::FOUND:
+                    // Маршрут найден
                     $routeInfo[0] = 'route';
                     $callback = $routeInfo[1];
-                    $app = $controller = $action = '';
                     $args = !empty($routeInfo[2]) ? $routeInfo[2] : null;
                     $route = clone $routeInfo[3];
+                    $app = $controller = $action = '';
 
+                    // Установка параметров маршрута, если они есть
                     if ($args) {
                         $route->setParams($args);
                     }
 
+                    // Получение middleware для маршрута
+                    $routeMiddlewares = $route->getMiddleware();
+                    foreach ($routeMiddlewares as $className) {
+                        $middlewares[] = [$className, 'process'];
+                    }
+
+                    // Определение контроллера и действия
                     if (is_array($callback)) {
                         $controller = $callback[0];
                         $plugin = static::getPluginByClass($controller);
@@ -191,38 +203,64 @@ class App
                         $plugin = static::getPluginByPath($path);
                     }
 
+                    // Получение callback для маршрута
                     $callback = static::getCallback($plugin, $app, $callback, $args);
-                    static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
-                    if (count(static::$callbacks) >= 1024) {
-                        unset(static::$callbacks[key(static::$callbacks)]);
-                    }
                     break;
                 case Dispatcher::NOT_FOUND:
-                    // Парсим контроллер и действие из пути
+                    // Маршрут не найден
+                    $route = null;
                     $controllerAndAction = static::parseControllerAction($path);
                     $plugin = $controllerAndAction['plugin'] ?? static::getPluginByPath($path);
 
-                    // Получаем приложение, контроллер и действие
                     $app = $controllerAndAction['app'];
                     $controller = $controllerAndAction['controller'];
                     $action = $controllerAndAction['action'];
 
-                    // Получаем обратный вызов
+                    // Получение callback для контроллера и действия
                     $callback = static::getCallback($plugin, $app, [$controller, $action]);
-                    static::$callbacks[$path] = [$callback, $plugin, $app, $controller, $action, null];
-                    if (count(static::$callbacks) >= 1024) {
-                        unset(static::$callbacks[key(static::$callbacks)]);
-                    }
-
-                    Server::log('Не найден URL: ' . $path . PHP_EOL);
-                    static::close_http($connection, 404);
-                    return;
+                    break;
                 case Dispatcher::METHOD_NOT_ALLOWED:
-                    Server::log('Метот GET не поддержиается для ' . $path . PHP_EOL);
+                    // Метод не поддерживается
+                    Server::log('Метод GET не поддерживается для ' . $path . PHP_EOL);
                     static::close_http($connection, 405);
                     return;
             }
 
+            // Получение и обработка middleware
+            $middlewares = array_merge($middlewares, Middleware::getMiddleware($plugin, $app, true));
+            foreach ($middlewares as $key => $item) {
+                $middleware = $item[0];
+                if (is_string($middleware)) {
+                    $middleware = static::container($plugin)->get($middleware);
+                } elseif ($middleware instanceof Closure) {
+                    $middleware = call_user_func($middleware, static::container($plugin));
+                }
+                if (!$middleware instanceof MiddlewareInterface) {
+                    throw new InvalidArgumentException('Неподдерживаемый тип middleware');
+                }
+                $middlewares[$key][0] = $middleware;
+            }
+
+            // Объединение middleware с callback
+            if ($middlewares) {
+                $callback = array_reduce($middlewares, function ($carry, $pipe) {
+                    return function ($request) use ($carry, $pipe) {
+                        try {
+                            return $pipe($request, $carry);
+                        } catch (Throwable $e) {
+                            return static::exceptionResponse($e, $request);
+                        }
+                    };
+                }, $callback);
+            }
+
+            // Сохранение callback и информации о соединении
+            static::$callbacks[$path] = [$callback, $plugin, $app, $controller ?: '', $action, $route];
+            if (count(static::$callbacks) >= 1024) {
+                unset(static::$callbacks[key(static::$callbacks)]);
+            }
+
+            // Обновление карты соединений
             if (!isset(static::$connectionsMap[$path])) {
                 static::$connectionsMap[$path] = [$connection->uuid => $connection];
             } else {
@@ -230,6 +268,7 @@ class App
             }
             Server::log('Рукопожатие успешно: ' . $path . PHP_EOL);
         } catch (Throwable $e) {
+            // Обработка исключений и закрытие соединения
             static::close_http($connection, static::exceptionResponse($e, $request));
         }
     }
@@ -246,108 +285,133 @@ class App
     public function onMessage(mixed $connection, mixed $request): void
     {
         try {
+            // Буферизация запроса
             $buffer = $request;
             /** @var Request $request */
             $request = $connection->request;
             $request->ws_buffer = $buffer;
 
-            // Устанавливаем контекст для соединения и запроса
+            // Установка контекста соединения и запроса
             Context::set(TcpConnection::class, $connection);
             Context::set(Request::class, $connection->request);
 
-            // Получаем путь из запроса
+            // Получение пути запроса
             $path = $request->path();
 
-            // Если для данного ключа уже есть обратные вызовы
+            // Проверка наличия callback для данного пути
             if (isset(static::$callbacks[$path])) {
-                // Получаем обратные вызовы
                 [$callback, $request->plugin, $request->app, $request->controller, $request->action, $request->route] = static::$callbacks[$path];
-
-                // Отправляем обратный вызов
+                // Отправка ответа с использованием callback
                 static::send($connection, $callback($request));
                 return;
             }
 
+            // Закрытие соединения с кодом 404, если callback не найден
             static::close($connection, 404);
         } catch (Throwable $e) {
-            // Если возникло исключение, отправляем ответ на исключение
+            // Отправка ответа с информацией об исключении
             static::send($connection, static::exceptionResponse($e, $request));
         } finally {
+            // Удаление контекста соединения и запроса
             Context::delete(TcpConnection::class);
             Context::delete(Request::class);
         }
     }
 
     /**
-     * @param string|Response|null $data
-     * @param bool $excludeCurrent
+     * Отправка данных всем соединениям.
+     *
+     * @param string|Response|null $data Данные для отправки.
+     * @param bool $excludeCurrent Исключить текущее соединение.
      * @return void
      * @throws Throwable
      */
     public static function sendToAll(string|Response|null $data = null, bool $excludeCurrent = false): void
     {
+        // Проходим по всем серверам
         foreach (static::$server::getAllServers() as $server) {
+            // Проходим по всем соединениям сервера
             foreach ($server->connections as $id => $connection) {
+                // Исключаем текущее соединение, если это указано
                 if ($excludeCurrent && $connection->uuid === static::connection()->uuid) continue;
+                // Отправляем данные соединению
                 static::send($connection, $data);
             }
         }
     }
 
     /**
-     * @param string|Response|null $data
-     * @param bool $excludeCurrent
+     * Отправка данных группе соединений.
+     *
+     * @param string|Response|null $data Данные для отправки.
+     * @param bool $excludeCurrent Исключить текущее соединение.
      * @return void
      * @throws Throwable
      */
     public static function sendToGroup(string|Response|null $data = null, bool $excludeCurrent = false): void
     {
+        // Получаем путь запроса текущего соединения
         $path = static::connection()->request->path();
+        // Проходим по всем соединениям в карте соединений для данного пути
         foreach (static::$connectionsMap[$path] ?? [] as $uuid => $connection) {
+            // Исключаем текущее соединение, если это указано
             if ($excludeCurrent && $uuid === static::connection()->uuid) continue;
+            // Отправляем данные соединению
             static::send($connection, $data);
         }
     }
 
     /**
-     * @param TcpConnection|mixed $connection
-     * @param string|Response|null $data
+     * Отправка данных конкретному соединению.
+     *
+     * @param TcpConnection|mixed $connection Соединение TCP.
+     * @param string|Response|null $data Данные для отправки.
      * @throws Throwable
      */
     protected static function send(TcpConnection $connection, string|Response|null $data = null): void
     {
+        // Отправляем данные соединению
         $connection->send(is_string($data) ? $data : $data->rawBody());
     }
 
     /**
-     * @param TcpConnection $connection
-     * @param int $status
-     * @param mixed|null $data
+     * Закрытие соединения с отправкой статуса и данных.
+     *
+     * @param TcpConnection $connection Соединение TCP.
+     * @param int $status Статус закрытия.
+     * @param mixed|null $data Данные для отправки.
      * @return void
      * @throws Throwable
      */
     public static function close(TcpConnection $connection, int $status = 204, mixed $data = null): void
     {
+        // Закрываем соединение с отправкой JSON-ответа
         $connection->close(json(['status' => $status, 'data' => $data ?? Http\Response::PHRASES[$status]]));
     }
 
     /**
-     * @param TcpConnection $connection
-     * @param int|Response $status
-     * @param mixed|null $data
+     * Закрытие HTTP-соединения с отправкой статуса и данных.
+     *
+     * @param TcpConnection $connection Соединение TCP.
+     * @param int|Response $status Статус закрытия или объект ответа.
+     * @param mixed|null $data Данные для отправки.
      * @return void
      * @throws Throwable
      */
     public static function close_http(TcpConnection $connection, int|Response $status = 204, mixed $data = null): void
     {
+        // Если статус является объектом ответа
         if ($status instanceof Response) {
+            // Получаем сообщение об ошибке, если есть
             if ($e = $status->exception()) {
                 $data = $e->getMessage();
             } else {
                 $data = $status->rawBody();
             }
+            // Получаем статусный код из объекта ответа
             $status = $status->getStatusCode();
         }
+        // Закрываем соединение с отправкой HTTP-ответа
         $connection->close((string)new Http\Response($status, [], json(['status' => $status, 'data' => $data ?? Server\Protocols\Http\Response::PHRASES[$status]])));
     }
 
@@ -361,29 +425,29 @@ class App
     protected static function exceptionResponse(Throwable $e, mixed $request): Response
     {
         try {
-            // Получаем приложение и плагин из запроса
+            // Получение приложения и плагина из запроса
             $app = $request->app ?: '';
             $plugin = $request->plugin ?: '';
-            // Получаем конфигурацию исключений
+
+            // Получение конфигурации обработчика исключений
             $exceptionConfig = static::config($plugin, 'exception');
-            // Получаем класс обработчика исключений по умолчанию
             $defaultException = $exceptionConfig[''] ?? ExceptionHandler::class;
-            // Получаем класс обработчика исключений для приложения
             $exceptionHandlerClass = $exceptionConfig[$app] ?? $defaultException;
 
-            // Создаем экземпляр обработчика исключений
+            // Создание экземпляра обработчика исключений
             /** @var ExceptionHandlerInterface $exceptionHandler */
             $exceptionHandler = static::container($plugin)->make($exceptionHandlerClass, [
                 'logger' => static::$logger,
             ]);
-            // Отправляем отчет об исключении
+
+            // Сообщение об исключении
             $exceptionHandler->report($e);
-            // Создаем ответ на исключение
+            // Создание ответа на исключение
             $response = $exceptionHandler->render($request, $e);
             $response->exception($e);
             return $response;
         } catch (Throwable $e) {
-            // Если возникло исключение при обработке исключения, создаем ответ с кодом 500
+            // Создание ответа на исключение в случае ошибки в обработчике исключений
             $response = new Response(500, [], static::config($plugin ?? '', 'app.debug') ? (string)$e : $e->getMessage());
             $response->exception($e);
             return $response;
@@ -391,47 +455,61 @@ class App
     }
 
     /**
-     * @return TcpConnection|null
+     * Получение текущего соединения.
+     *
+     * @return TcpConnection|null Возвращает текущее соединение или null.
      */
     public static function connection(): TcpConnection|null
     {
+        // Получаем текущее соединение из контекста
         return Context::get(TcpConnection::class);
     }
 
     /**
-     * @return Request|null
+     * Получение текущего запроса.
+     *
+     * @return Request|null Возвращает текущий запрос или null.
      */
     public static function request(): Request|null
     {
+        // Получаем текущий запрос из контекста
         return Context::get(Request::class);
     }
 
     /**
-     * @return Server|null
+     * Получение текущего сервера.
+     *
+     * @return Server|null Возвращает текущий сервер или null.
      */
     public static function server(): ?Server
     {
+        // Возвращаем текущий сервер
         return static::$server;
     }
 
     /**
-     * Конфигурация
-     * @param string $plugin
-     * @param string $key
-     * @param $default
-     * @return array|mixed|null
+     * Получение конфигурации.
+     *
+     * @param string $plugin Плагин.
+     * @param string $key Ключ конфигурации.
+     * @param mixed $default Значение по умолчанию.
+     * @return array|mixed|null Возвращает значение конфигурации или значение по умолчанию.
      */
     protected static function config(string $plugin, string $key, $default = null): mixed
     {
+        // Получаем значение конфигурации для указанного плагина и ключа
         return Config::get($plugin ? "plugin.$plugin.$key" : $key, $default);
     }
 
     /**
-     * @param string $plugin
-     * @return ContainerInterface|array|null
+     * Получение контейнера зависимостей.
+     *
+     * @param string $plugin Плагин.
+     * @return ContainerInterface|array|null Возвращает контейнер зависимостей или null.
      */
     public static function container(string $plugin = ''): ContainerInterface|array|null
     {
+        // Получаем контейнер зависимостей для указанного плагина
         return static::config($plugin, 'container');
     }
 
@@ -442,47 +520,25 @@ class App
      * @param string $app Приложение.
      * @param mixed $call Вызов.
      * @param array|null $args Аргументы.
-     * @param bool $withGlobalMiddleware Использовать глобальное промежуточное ПО.
-     * @param RouteObject|null $route Маршрут.
      * @return callable|Closure Возвращает обратный вызов.
      * @throws ContainerExceptionInterface
      * @throws NotFoundExceptionInterface
      * @throws ReflectionException
      */
-    protected static function getCallback(string $plugin, string $app, mixed $call, array $args = null, bool $withGlobalMiddleware = true, RouteObject $route = null): callable|Closure
+    protected static function getCallback(string $plugin, string $app, mixed $call, array $args = null): callable|Closure
     {
+        // Преобразование аргументов в массив значений, если они не равны null
         $args = $args === null ? null : array_values($args);
         $middlewares = [];
-        // Если есть маршрут, получаем промежуточное ПО маршрута
-        if ($route) {
-            $routeMiddlewares = $route->getMiddleware();
-            foreach ($routeMiddlewares as $className) {
-                $middlewares[] = [$className, 'process'];
-            }
-        }
-        // Добавляем глобальное промежуточное ПО
-        $middlewares = array_merge($middlewares, Middleware::getMiddleware($plugin, $app, $withGlobalMiddleware));
-
-        // Создаем экземпляры промежуточного ПО
-        foreach ($middlewares as $key => $item) {
-            $middleware = $item[0];
-            if (is_string($middleware)) {
-                $middleware = static::container($plugin)->get($middleware);
-            } elseif ($middleware instanceof Closure) {
-                $middleware = call_user_func($middleware, static::container($plugin));
-            }
-            if (!$middleware instanceof MiddlewareInterface) {
-                throw new InvalidArgumentException('Not support middleware type');
-            }
-            $middlewares[$key][0] = $middleware;
-        }
 
         // Проверяем, нужно ли внедрять зависимости в вызов
         $needInject = static::isNeedInject($call, $args);
         if (is_array($call) && is_string($call[0])) {
+            // Проверка, нужно ли повторно использовать контроллер
             $controllerReuse = static::config($plugin, 'app.controller_reuse', true);
             if (!$controllerReuse) {
                 if ($needInject) {
+                    // Внедрение зависимостей и создание контроллера
                     $call = function ($request, ...$args) use ($call, $plugin) {
                         $call[0] = static::container($plugin)->make($call[0]);
                         $reflector = static::getReflector($call);
@@ -491,12 +547,14 @@ class App
                     };
                     $needInject = false;
                 } else {
+                    // Создание контроллера без внедрения зависимостей
                     $call = function ($request, ...$args) use ($call, $plugin) {
                         $call[0] = static::container($plugin)->make($call[0]);
                         return $call($request, ...$args);
                     };
                 }
             } else {
+                // Получение контроллера из контейнера
                 $call[0] = static::container($plugin)->get($call[0]);
             }
         }
@@ -506,77 +564,39 @@ class App
             $call = static::resolveInject($plugin, $call);
         }
 
-        // Если есть промежуточное ПО, создаем цепочку вызовов
-        if ($middlewares) {
-            $callback = array_reduce($middlewares, function ($carry, $pipe) {
-                return function ($request) use ($carry, $pipe) {
-                    try {
-                        return $pipe($request, $carry);
-                    } catch (Throwable $e) {
-                        return static::exceptionResponse($e, $request);
-                    }
-                };
-            }, function ($request) use ($call, $args) {
-                try {
-                    if ($request instanceof Request) {
-                        $request = $request->getData();
-                    }
-                    if ($args === null) {
-                        $response = $call($request);
-                    } else {
-                        $response = $call($request, ...$args);
-                    }
-                } catch (Throwable $e) {
-                    return static::exceptionResponse($e, $request);
-                }
-                if (!$response instanceof Response) {
-                    if (!is_string($response)) {
-                        $response = static::stringify($response);
-                    }
-                    $response = new Response(200, [], $response);
-                }
-                return $response;
-            });
-        } else {
-            // Если нет промежуточного ПО, создаем обратный вызов
-            $callback = function ($request) use ($call, $args) {
-                try {
-                    if ($request instanceof Request) {
-                        $request = $request->getData();
-                    }
-                    if ($args === null) {
-                        $response = $call($request);
-                    } else {
-                        $response = $call($request, ...$args);
-                    }
-                } catch (Throwable $e) {
-                    return static::exceptionResponse($e, $request);
-                }
-                if (!$response instanceof Response) {
-                    if (!is_string($response)) {
-                        $response = static::stringify($response);
-                    }
-                    $response = new Response(200, [], $response);
-                }
-                return $response;
-            };
-        }
-        return $callback;
+        // Возвращаем функцию обратного вызова
+        return function ($request) use ($call, $args) {
+            try {
+                // Получение данных из запроса
+                $buffer = $request instanceof Request ? $request->getData() : $request;
+                // Вызов функции обратного вызова с аргументами
+                $response = $args === null ? $call($buffer) : $call($buffer, ...$args);
+            } catch (Throwable $e) {
+                // Обработка исключений и возврат ответа с ошибкой
+                return static::exceptionResponse($e, $request);
+            }
+
+            // Возврат ответа
+            return $response instanceof Response ? $response : new Response(200, [], static::stringify($response));
+        };
     }
 
     /**
-     * Check whether inject is required
-     * @param $call
-     * @param $args
-     * @return bool
+     * Проверка, требуется ли внедрение зависимостей.
+     *
+     * @param mixed $call Вызов.
+     * @param mixed $args Аргументы.
+     * @return bool Возвращает true, если требуется внедрение зависимостей.
      * @throws ReflectionException
      */
     protected static function isNeedInject($call, $args): bool
     {
+        // Проверка, существует ли метод в классе
         if (is_array($call) && !method_exists($call[0], $call[1])) {
             return false;
         }
         $args = $args ?: [];
+        // Получение рефлектора для вызова
         $reflector = static::getReflector($call);
         $reflectionParameters = $reflector->getParameters();
         if (!$reflectionParameters) {
@@ -585,6 +605,7 @@ class App
         $firstParameter = current($reflectionParameters);
         unset($reflectionParameters[key($reflectionParameters)]);
         $adaptersList = ['int', 'string', 'bool', 'array', 'object', 'float', 'mixed', 'resource'];
+        // Проверка типов параметров
         foreach ($reflectionParameters as $parameter) {
             if ($parameter->hasType() && !in_array($parameter->getType()->getName(), $adaptersList)) {
                 return true;
@@ -594,6 +615,7 @@ class App
             return count($args) > count($reflectionParameters);
         }
 
+        // Проверка, является ли первый параметр экземпляром класса запроса
         if (!is_a(static::$requestClass, $firstParameter->getType()->getName())) {
             return true;
         }
@@ -602,10 +624,10 @@ class App
     }
 
     /**
-     * Get reflector.
+     * Получение рефлектора.
      *
-     * @param $call
-     * @return ReflectionFunction|ReflectionMethod
+     * @param mixed $call Вызов.
+     * @return ReflectionFunction|ReflectionMethod Возвращает рефлектор функции или метода.
      * @throws ReflectionException
      */
     protected static function getReflector($call): ReflectionMethod|ReflectionFunction
@@ -627,37 +649,44 @@ class App
      */
     protected static function resolveMethodDependencies(string $plugin, mixed $request, array $args, ReflectionFunctionAbstract $reflector): array
     {
-        // Спецификация информации о параметрах
+        // Преобразование аргументов в массив значений
         $args = array_values($args);
+        // Инициализация массива параметров с запросом
         $parameters = [$request];
-        // Массив классов рефлексии для циклических параметров, каждый $parameter представляет собой объект рефлексии параметров
+
+        // Проходим по всем параметрам рефлектора
         foreach ($reflector->getParameters() as $parameter) {
-            // Переменный параметр
+            // Если есть текущий аргумент, добавляем его в параметры
             if (null !== key($args)) {
                 $parameters[] = current($args);
             } else {
-                // Указывает, имеет ли текущий параметр значение по умолчанию. Если да, возвращает true
+                // Иначе добавляем значение по умолчанию или null
                 $parameters[] = $parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null;
             }
-            // Потребление квоты переменных
+
+            // Переходим к следующему аргументу
             next($args);
         }
 
-        // Возвращает результат замены параметров
+        // Возвращаем массив параметров
         return $parameters;
     }
 
     /**
-     * @param string $plugin
-     * @param array|Closure $call
-     * @return Closure
-     * @see Dependency injection through reflection information
+     * Функция для внедрения зависимостей через информацию о рефлексии.
+     *
+     * @param string $plugin Плагин.
+     * @param array|Closure $call Вызов.
+     * @return Closure Возвращает замыкание.
      */
     protected static function resolveInject(string $plugin, array|Closure $call): Closure
     {
         return function (mixed $request, ...$args) use ($plugin, $call) {
+            // Получаем рефлектор для вызова
             $reflector = static::getReflector($call);
+            // Получаем зависимые параметры для вызова
             $args = static::resolveMethodDependencies($plugin, $request, $args, $reflector);
+            // Выполняем вызов с зависимыми параметрами
             return $call(...$args);
         };
     }
@@ -967,6 +996,8 @@ class App
     {
         $type = gettype($data);
         switch ($type) {
+            case 'string':
+                return $data;
             case 'boolean':
                 return $data ? 'true' : 'false';
             case 'NULL':
