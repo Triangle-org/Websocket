@@ -27,9 +27,6 @@
 namespace support;
 
 /**
- * Класс Request
- * Этот класс наследует функциональность от класса \Triangle\Engine\Ws\Request и может быть расширен для обработки HTTP-запросов в вашем приложении.
- *
  * @link https://www.php-fig.org/psr/psr-7/
  */
 #[\AllowDynamicProperties]

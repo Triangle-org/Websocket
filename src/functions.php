@@ -26,28 +26,41 @@
 
 use localzet\Server;
 use localzet\Server\Connection\TcpConnection;
-use support\Request;
-use support\Response;
 use Triangle\Ws\App;
+use Triangle\Ws\Request;
+use Triangle\Ws\Response;
 
-/**
- * @param mixed $data
- * @param int $status
- * @param array $headers
- * @return Response
- */
-function response(mixed $data = 'OK', int $status = 200, array $headers = []): Response
-{
-    $body = [
-        'status' => $status,
-        'data' => $data
-    ];
+if (!function_exists('response')) {
+    /**
+     * @param mixed $data
+     * @param int $status
+     * @param array $headers
+     * @return Response
+     */
+    function response(mixed $data = 'OK', int $status = 200, array $headers = []): Response
+    {
+        $body = [
+            'status' => $status,
+            'data' => $data
+        ];
 
-    if (config('app.debug')) {
-        $body['debug'] = config('app.debug');
+        if (config('app.debug')) {
+            $body['debug'] = config('app.debug');
+        }
+
+        return new Response($status, ['Content-Type' => 'application/json'] + $headers, json($body));
     }
+}
 
-    return new Response($status, ['Content-Type' => 'application/json'] + $headers, json($body));
+if (!function_exists('not_found')) {
+    /**
+     * @return Response
+     * @throws Throwable
+     */
+    function not_found(): Response
+    {
+        return response('Ничего не найдено', 404);
+    }
 }
 
 if (!function_exists('jsonp')) {
@@ -65,26 +78,32 @@ if (!function_exists('jsonp')) {
     }
 }
 
-/**
- * @return TcpConnection|null
- */
-function connection(): ?TcpConnection
-{
-    return App::connection();
+if (!function_exists('connection')) {
+    /**
+     * @return TcpConnection|null
+     */
+    function connection(): ?TcpConnection
+    {
+        return App::connection();
+    }
 }
 
-/**
- * @return \Triangle\Ws\Request|Request
- */
-function request(): \Triangle\Ws\Request|Request
-{
-    return App::request();
+if (!function_exists('request')) {
+    /**
+     * @return Request
+     */
+    function request(): Request
+    {
+        return App::request();
+    }
 }
 
-/**
- * @return Server|null
- */
-function server(): ?Server
-{
-    return App::server();
+if (!function_exists('server')) {
+    /**
+     * @return Server|null
+     */
+    function server(): ?Server
+    {
+        return App::server();
+    }
 }

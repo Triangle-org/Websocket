@@ -40,16 +40,21 @@ class Install
      */
     public static function install(): void
     {
-        $source = __DIR__ . "/Config";
-        if (self::TRIANGLE_PLUGIN
-            && is_dir($source)
-            && !empty($sourceFiles = glob($source . "/*.php"))
-        ) {
-            foreach ($sourceFiles as $file) {
-                $target = config_path(str_replace($source, "", $file));
-                if (!file_exists($target)) {
-                    copy_dir($file, $target);
-                    echo "Создан $target\r\n";
+        if (!self::TRIANGLE_PLUGIN) return;
+
+        $sources = [
+            __DIR__ . "/Config" => config_path(),
+            __DIR__ . "/Support" => base_path('support')
+        ];
+
+        foreach ($sources as $source => $target) {
+            if (is_dir($source) && !empty($sourceFiles = glob($source . "/*.php"))) {
+                foreach ($sourceFiles as $file) {
+                    $path = path_combine($target, str_replace($source, "", $file));
+                    if (!file_exists($path)) {
+                        copy_dir($file, $path);
+                        echo "Создан $path\r\n";
+                    }
                 }
             }
         }

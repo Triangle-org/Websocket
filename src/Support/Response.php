@@ -27,9 +27,6 @@
 namespace support;
 
 /**
- * Класс Response
- * Этот класс наследует функциональность от класса \Triangle\Engine\Ws\Response и может быть расширен для обработки HTTP-ответов в вашем приложении.
- *
  * @link https://www.php-fig.org/psr/psr-7/
  */
 #[\AllowDynamicProperties]

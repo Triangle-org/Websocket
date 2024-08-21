@@ -1,5 +1,5 @@
 {
-  "name": "triangle/ws",
+  "name": "triangle/websocket",
   "description": "Triangle Websocket Component",
   "type": "library",
   "keywords": [
