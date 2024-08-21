@@ -32,6 +32,7 @@ use InvalidArgumentException;
 use localzet\Server;
 use localzet\Server\Connection\TcpConnection;
 use localzet\Server\Protocols\Http;
+use localzet\Server\Protocols\Websocket;
 use Monolog\Logger;
 use Psr\Container\ContainerExceptionInterface;
 use Psr\Container\ContainerInterface;
@@ -140,7 +141,7 @@ class App
     public function onServerStart(Server &$server): void
     {
         static::$server = $server;
-        Http::requestClass(static::$requestClass);
+        Websocket::requestClass(static::$requestClass);
         Autoload::loadAll($server);
     }
 
@@ -315,7 +316,7 @@ class App
      */
     protected static function send(TcpConnection $connection, string|Response|null $data = null): void
     {
-        $connection->send($data instanceof Http\Response ? $data->rawBody() : $data);
+        $connection->send(is_string($data) ? $data : $data->rawBody());
     }
 
     /**
