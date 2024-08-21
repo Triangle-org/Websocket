@@ -293,13 +293,13 @@ class App extends ServerAbstract
      */
     public function onMessage(mixed &$connection, mixed $request): void
     {
-        try {
-            // Буферизация запроса
-            $buffer = $request;
-            /** @var Request $request */
-            $request = $connection->request;
-            $request->ws_buffer = $buffer;
+        // Буферизация запроса
+        $buffer = $request;
+        /** @var Request $request */
+        $request = $connection->request;
+        $request->ws_buffer = $buffer;
 
+        try {
             // Установка контекста запроса
             Context::set(Request::class, $request);
 
