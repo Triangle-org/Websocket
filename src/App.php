@@ -171,6 +171,7 @@ class App
             $routeInfo = Router::dispatch('GET', $request->path());
             switch ($routeInfo[0]) {
                 case Dispatcher::FOUND:
+                    $routeInfo[0] = 'route';
                     $callback = $routeInfo[1];
                     $app = $controller = $action = '';
                     $args = !empty($routeInfo[2]) ? $routeInfo[2] : null;
@@ -537,13 +538,27 @@ class App
             });
         } else {
             // Если нет промежуточного ПО, создаем обратный вызов
-            if ($args === null) {
-                $callback = $call;
-            } else {
-                $callback = function ($request) use ($call, $args) {
-                    return $call($request, ...$args);
-                };
-            }
+            $callback = function ($request) use ($call, $args) {
+                try {
+                    if ($request instanceof Request) {
+                        $request = $request->getData();
+                    }
+                    if ($args === null) {
+                        $response = $call($request);
+                    } else {
+                        $response = $call($request, ...$args);
+                    }
+                } catch (Throwable $e) {
+                    return static::exceptionResponse($e, $request);
+                }
+                if (!$response instanceof Response) {
+                    if (!is_string($response)) {
+                        $response = static::stringify($response);
+                    }
+                    $response = new Response(200, [], $response);
+                }
+                return $response;
+            };
         }
         return $callback;
     }
