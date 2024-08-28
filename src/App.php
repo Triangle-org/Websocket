@@ -48,6 +48,7 @@ use Triangle\Engine\Autoload;
 use Triangle\Engine\Config;
 use Triangle\Engine\Context;
 use Triangle\Engine\Path;
+use Triangle\Engine\Plugin;
 use Triangle\Exception\ExceptionHandler;
 use Triangle\Exception\ExceptionHandlerInterface;
 use Triangle\Middleware\Bootstrap as Middleware;
@@ -169,7 +170,6 @@ class App extends ServerAbstract
                 str_contains($path, "\0")
             ) {
                 // Логирование небезопасного URL и закрытие соединения с кодом 422
-                Server::log('Небезопасный URL: ' . $path . PHP_EOL);
                 static::close_http($connection, 422);
                 return null;
             }
@@ -200,32 +200,31 @@ class App extends ServerAbstract
                     // Определение контроллера и действия
                     if (is_array($callback)) {
                         $controller = $callback[0];
-                        $plugin = static::getPluginByClass($controller);
+                        $plugin = Plugin::app_by_class($controller);
                         $app = static::getAppByController($controller);
                         $action = static::getRealMethod($controller, $callback[1]) ?? '';
                     } else {
-                        $plugin = static::getPluginByPath($path);
+                        $plugin = Plugin::app_by_path($path);
                     }
 
                     // Получение callback для маршрута
-                    $callback = static::getCallback($plugin, $app, $callback, $args);
+                    $callback = static::getCallback($plugin, $callback, $args);
                     break;
                 case Dispatcher::NOT_FOUND:
                     // Маршрут не найден
                     $route = null;
                     $controllerAndAction = static::parseControllerAction($path);
-                    $plugin = $controllerAndAction['plugin'] ?? static::getPluginByPath($path);
+                    $plugin = $controllerAndAction['plugin'] ?? Plugin::app_by_path($path);
 
                     $app = $controllerAndAction['app'];
                     $controller = $controllerAndAction['controller'];
                     $action = $controllerAndAction['action'];
 
                     // Получение callback для контроллера и действия
-                    $callback = static::getCallback($plugin, $app, [$controller, $action]);
+                    $callback = static::getCallback($plugin, [$controller, $action]);
                     break;
                 case Dispatcher::METHOD_NOT_ALLOWED:
                     // Метод не поддерживается
-                    Server::log('Метод GET не поддерживается для ' . $path . PHP_EOL);
                     static::close_http($connection, 405);
                     return null;
             }
@@ -274,7 +273,6 @@ class App extends ServerAbstract
                 }, $callback);
             }
 
-            Server::log('Рукопожатие успешно: ' . $path . PHP_EOL);
             return $callback($request);
         } catch (Throwable $e) {
             // Обработка исключений и закрытие соединения
@@ -446,11 +444,11 @@ class App extends ServerAbstract
      */
     protected static function exceptionResponse(Throwable $e, mixed $request): Response
     {
-        try {
-            // Получение приложения и плагина из запроса
-            $app = $request->app ?: '';
-            $plugin = $request->plugin ?: '';
+        // Получение приложения и плагина из запроса
+        $app = $request?->app ?: '';
+        $plugin = $request?->plugin ?: '';
 
+        try {
             // Получение конфигурации обработчика исключений
             $exceptionConfig = static::config($plugin, 'exception');
             $defaultException = $exceptionConfig[''] ?? ExceptionHandler::class;
@@ -514,13 +512,13 @@ class App extends ServerAbstract
      *
      * @param string $plugin Плагин.
      * @param string $key Ключ конфигурации.
-     * @param mixed $default Значение по умолчанию.
+     * @param mixed|null $default Значение по умолчанию.
      * @return array|mixed|null Возвращает значение конфигурации или значение по умолчанию.
      */
-    protected static function config(string $plugin, string $key, $default = null): mixed
+    protected static function config(string $plugin, string $key, mixed $default = null): mixed
     {
         // Получаем значение конфигурации для указанного плагина и ключа
-        return Config::get($plugin ? "plugin.$plugin.$key" : $key, $default);
+        return Config::get($plugin ? config('app.plugin_alias', 'plugin') . ".$plugin.$key" : $key, $default);
     }
 
     /**
@@ -538,8 +536,7 @@ class App extends ServerAbstract
     /**
      * Функция для получения обратного вызова.
      *
-     * @param string $plugin Плагин.
-     * @param string $app Приложение.
+     * @param string|null $plugin Плагин.
      * @param mixed $call Вызов.
      * @param array|null $args Аргументы.
      * @return callable|Closure Возвращает обратный вызов.
@@ -547,11 +544,11 @@ class App extends ServerAbstract
      * @throws NotFoundExceptionInterface
      * @throws ReflectionException
      */
-    protected static function getCallback(string $plugin, string $app, mixed $call, array $args = null): callable|Closure
+    protected static function getCallback(?string $plugin, mixed $call, array $args = null): callable|Closure
     {
         // Преобразование аргументов в массив значений, если они не равны null
         $args = $args === null ? null : array_values($args);
-        $middlewares = [];
+        $plugin ??= '';
 
         // Проверяем, нужно ли внедрять зависимости в вызов
         $needInject = static::isNeedInject($call, $args);
@@ -715,27 +712,13 @@ class App extends ServerAbstract
 
     /**
      * @param string $controllerClass
-     * @return string
-     */
-    public static function getPluginByClass(string $controllerClass): string
-    {
-        $controllerClass = trim($controllerClass, '\\');
-        $tmp = explode('\\', $controllerClass, 3);
-        if ($tmp[0] !== 'plugin') {
-            return '';
-        }
-        return $tmp[1] ?? '';
-    }
-
-    /**
-     * @param string $controllerClass
      * @return mixed|string
      */
     protected static function getAppByController(string $controllerClass): mixed
     {
         $controllerClass = trim($controllerClass, '\\');
         $tmp = explode('\\', $controllerClass, 5);
-        $pos = $tmp[0] === 'plugin' ? 3 : 1;
+        $pos = $tmp[0] === config('app.plugin_alias', 'plugin') ? 3 : 1;
         if (!isset($tmp[$pos])) {
             return '';
         }
@@ -761,26 +744,6 @@ class App extends ServerAbstract
     }
 
     /**
-     * Функция для получения плагина по пути.
-     *
-     * @param string $path Путь.
-     * @return string Возвращает имя плагина, если он найден, иначе возвращает пустую строку.
-     */
-    public static function getPluginByPath(string $path): string
-    {
-        // Удаляем слэши с начала и конца пути
-        $path = trim($path, '/');
-        // Разбиваем путь на части
-        $tmp = explode('/', $path, 3);
-        // Если первая часть пути не равна 'app', возвращаем пустую строку
-        if ($tmp[0] !== 'app') {
-            return '';
-        }
-        // Возвращаем вторую часть пути (имя плагина) или пустую строку, если она не существует
-        return $tmp[1] ?? '';
-    }
-
-    /**
      * Функция для разбора контроллера и действия из пути.
      *
      * @param string $path Путь.
@@ -797,19 +760,15 @@ class App extends ServerAbstract
             return $cache[$path];
         }
 
-        // Разбиваем путь на части
-        $pathExplode = explode('/', trim($path, '/'));
-
         // Проверяем, является ли путь плагином
-        $isPlugin = isset($pathExplode[1]) && $pathExplode[0] === 'app';
-
-        // Получаем префиксы для конфигурации, пути и класса
-        $configPrefix = $isPlugin ? "plugin.$pathExplode[1]." : '';
-        $pathPrefix = $isPlugin ? "/app/$pathExplode[1]" : '';
-        $classPrefix = $isPlugin ? "plugin\\$pathExplode[1]" : '';
+        $plugin = Plugin::app_by_path($path);
 
         // Получаем суффикс контроллера из конфигурации
-        $suffix = Config::get("{$configPrefix}app.controller_suffix", '');
+        $suffix = static::config($plugin, 'app.controller_suffix', '');
+
+        // Получаем префиксы для конфигурации, пути и класса
+        $pathPrefix = $plugin ? "/" . config('app.plugin_uri', 'app') . "/$plugin" : '';
+        $classPrefix = $plugin ? config('app.plugin_alias', 'plugin') . "\\$plugin" : '';
 
         // Получаем относительный путь
         $relativePath = trim(substr($path, strlen($pathPrefix)), '/');
@@ -900,7 +859,7 @@ class App extends ServerAbstract
         // Если класс контроллера и действие найдены, возвращаем информацию о них
         if (($controllerClass = static::getController($controllerClass)) && ($action = static::getAction($controllerClass, $action))) {
             return [
-                'plugin' => static::getPluginByClass($controllerClass),
+                'plugin' => Plugin::app_by_class($controllerClass),
                 'app' => static::getAppByController($controllerClass),
                 'controller' => $controllerClass,
                 'action' => $action
@@ -927,7 +886,7 @@ class App extends ServerAbstract
 
         // Разбиваем полное имя класса на части
         $explodes = explode('\\', strtolower(ltrim($controllerClass, '\\')));
-        $basePath = $explodes[0] === 'plugin' ? Path::basePath('plugin') : app_path();
+        $basePath = $explodes[0] === config('app.plugin_alias', 'plugin') ? Path::basePath(config('app.plugin_alias', 'plugin')) : app_path();
         unset($explodes[0]);
         $fileName = array_pop($explodes) . '.php';
         $found = true;
