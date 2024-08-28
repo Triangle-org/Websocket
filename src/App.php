@@ -510,12 +510,12 @@ class App extends ServerAbstract
     /**
      * Получение конфигурации.
      *
-     * @param string $plugin Плагин.
+     * @param string|null $plugin Плагин.
      * @param string $key Ключ конфигурации.
      * @param mixed|null $default Значение по умолчанию.
      * @return array|mixed|null Возвращает значение конфигурации или значение по умолчанию.
      */
-    protected static function config(string $plugin, string $key, mixed $default = null): mixed
+    protected static function config(?string $plugin, string $key, mixed $default = null): mixed
     {
         // Получаем значение конфигурации для указанного плагина и ключа
         return Config::get($plugin ? config('app.plugin_alias', 'plugin') . ".$plugin.$key" : $key, $default);
@@ -524,10 +524,10 @@ class App extends ServerAbstract
     /**
      * Получение контейнера зависимостей.
      *
-     * @param string $plugin Плагин.
+     * @param string|null $plugin Плагин.
      * @return ContainerInterface|array|null Возвращает контейнер зависимостей или null.
      */
-    public static function container(string $plugin = ''): ContainerInterface|array|null
+    public static function container(?string $plugin = ''): ContainerInterface|array|null
     {
         // Получаем контейнер зависимостей для указанного плагина
         return static::config($plugin, 'container');
@@ -561,7 +561,7 @@ class App extends ServerAbstract
                     $call = function ($request, ...$args) use ($call, $plugin) {
                         $call[0] = static::container($plugin)->make($call[0]);
                         $reflector = static::getReflector($call);
-                        $args = static::resolveMethodDependencies($plugin, $request, $args, $reflector);
+                        $args = static::resolveMethodDependencies($request, $args, $reflector);
                         return $call(...$args);
                     };
                     $needInject = false;
@@ -580,7 +580,7 @@ class App extends ServerAbstract
 
         // Если нужно внедрить зависимости, внедряем их
         if ($needInject) {
-            $call = static::resolveInject($plugin, $call);
+            $call = static::resolveInject($call);
         }
 
         // Возвращаем функцию обратного вызова
@@ -666,7 +666,7 @@ class App extends ServerAbstract
      * @param ReflectionFunctionAbstract $reflector Рефлектор.
      * @return array Возвращает массив с зависимыми параметрами.
      */
-    protected static function resolveMethodDependencies(string $plugin, mixed $request, array $args, ReflectionFunctionAbstract $reflector): array
+    protected static function resolveMethodDependencies(mixed $request, array $args, ReflectionFunctionAbstract $reflector): array
     {
         // Преобразование аргументов в массив значений
         $args = array_values($args);
@@ -694,17 +694,16 @@ class App extends ServerAbstract
     /**
      * Функция для внедрения зависимостей через информацию о рефлексии.
      *
-     * @param string $plugin Плагин.
      * @param array|Closure $call Вызов.
      * @return Closure Возвращает замыкание.
      */
-    protected static function resolveInject(string $plugin, array|Closure $call): Closure
+    protected static function resolveInject(array|Closure $call): Closure
     {
-        return function (mixed $request, ...$args) use ($plugin, $call) {
+        return function (mixed $request, ...$args) use ($call) {
             // Получаем рефлектор для вызова
             $reflector = static::getReflector($call);
             // Получаем зависимые параметры для вызова
-            $args = static::resolveMethodDependencies($plugin, $request, $args, $reflector);
+            $args = static::resolveMethodDependencies($request, $args, $reflector);
             // Выполняем вызов с зависимыми параметрами
             return $call(...$args);
         };
