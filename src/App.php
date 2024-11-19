@@ -143,6 +143,7 @@ class App extends ServerAbstract
     {
         static::$server = $server;
         Websocket::requestClass(static::$requestClass);
+        Context::init();
         Autoload::loadAll($server);
     }
 
@@ -165,7 +166,9 @@ class App extends ServerAbstract
 
             // Проверка безопасности URL
             if (!$path ||
-                str_contains($path, '..') ||
+                $path[0] !== '/' ||
+                str_contains($path, '/../') ||
+                str_ends_with($path, '/..') ||
                 str_contains($path, "\\") ||
                 str_contains($path, "\0")
             ) {
