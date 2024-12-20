@@ -41,11 +41,7 @@ class Install
     public static function install(): void
     {
         if (!self::TRIANGLE_PLUGIN) return;
-
-        $sources = [
-            __DIR__ . "/Config" => config_path(),
-            __DIR__ . "/Support" => base_path('support')
-        ];
+        $sources = [__DIR__ . "/Config" => config_path()];
 
         foreach ($sources as $source => $target) {
             if (is_dir($source) && !empty($sourceFiles = glob($source . "/*.php"))) {

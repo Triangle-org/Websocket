@@ -24,12 +24,9 @@
  *              For any questions, please contact <triangle@localzet.com>
  */
 
-namespace support;
+namespace Triangle;
 
-/**
- * @link https://www.php-fig.org/psr/psr-7/
- */
 #[\AllowDynamicProperties]
-class Response extends \Triangle\Ws\Response
+class Response extends Engine\Response
 {
 }

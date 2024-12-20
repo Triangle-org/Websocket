@@ -24,13 +24,27 @@
  *              For any questions, please contact <triangle@localzet.com>
  */
 
-namespace support;
+namespace Triangle;
 
-/**
- * @link https://www.php-fig.org/psr/psr-7/
- */
-#[\AllowDynamicProperties]
-class Request extends \Triangle\Ws\Request
+use Triangle\Router\RouteObject;
+
+class Request extends Engine\Request
 {
-}
+    /**
+     * @var RouteObject|null $route Маршрут, связанный с запросом.
+     */
+    public ?RouteObject $route = null;
 
+    /**
+     * @var string|null
+     */
+    public ?string $ws_buffer = null;
+
+    /**
+     * @return string|null
+     */
+    public function getData(): ?string
+    {
+        return $this->ws_buffer;
+    }
+}

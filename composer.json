@@ -1,6 +1,6 @@
 {
-  "name": "triangle/websocket",
-  "description": "Triangle Websocket Component",
+  "name": "triangle/engine-ws",
+  "description": "Triangle WebSocket triangle/websocket",
   "type": "library",
   "keywords": [
     "localzet",
@@ -22,22 +22,17 @@
   },
   "autoload": {
     "psr-4": {
-      "Triangle\\": "",
       "Triangle\\Ws\\": "src",
-      "Triangle\\Exception\\": "src/Exception",
-      "support\\": "src/Support/",
-      "Support\\": "src/Support/"
-    },
-    "files": [
-      "src/functions.php"
-    ]
+      "Triangle\\": "src/Support"
+    }
   },
   "require": {
     "php": "^8.0",
-    "triangle/engine": ">=6.3",
-    "triangle/router": "^1.0",
-    "triangle/middleware": "^1.0"
+    "triangle/engine": ">=8",
+    "triangle/router": "^1.1",
+    "triangle/middleware": "^1.1"
   },
-  "suggest": {
+  "conflict": {
+    "triangle/engine-http": "*"
   }
 }
